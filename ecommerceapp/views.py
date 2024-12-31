@@ -4,7 +4,7 @@ from django.shortcuts import render, get_object_or_404
 from django.http import HttpResponse
 from rest_framework .generics import GenericAPIView
 from . serializers import RegisterSerializer,LoginSerializer,ProductSerializer,ReviewSerializer,CategorySerializer,WishlistSerializer,CartSerializer,OrderSerializer,AddressSerializer
-from . models import Registration,Login,Product,Review,Category,Wishlist,Cart,Order,Address
+from . models import Registration,Login,Product,Review,Category,Wishlist,Cart,Order,Address,Review_image
 from rest_framework.response import Response
 from rest_framework import status
 import cloudinary
@@ -258,56 +258,80 @@ class Delete_By_Id(GenericAPIView):
         product.delete()
         return Response({'message':'Deleted successfully'},status=status.HTTP_200_OK)
     
+
+
+
 class Add_Review(GenericAPIView):
     def get_serializer_class(self):
         return ReviewSerializer
-    
-    def post(self,request):
+
+    def post(self, request):
+        # Extract data from the request
         product_id = request.data.get('product_id')
         user_id = request.data.get('user_id')
         description = request.data.get('description')
         rating = request.data.get('rating')
+        images = request.FILES.getlist('image')
+        print(images)
 
-        if rating is None:
-            return Response({'message': 'Rating is required'}, status=status.HTTP_400_BAD_REQUEST)
-        
+        # Check for missing image
+        if not images:
+            return Response({'message': 'Image is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+     
+        # Validate rating
         try:
             rating = int(rating)
             if not (1 <= rating <= 5):
                 return Response({'message': 'Rating must be between 1 and 5'}, status=status.HTTP_400_BAD_REQUEST)
-        except ValueError:
-            return Response({'message': 'Invalid rating value'}, status=status.HTTP_400_BAD_REQUEST)
+        except (ValueError, TypeError):
+            return Response({'message': 'Invalid rating value. Must be an integer.'}, status=status.HTTP_400_BAD_REQUEST)
 
+       
+        # Validate product existence
         try:
-
-            product = Product.objects.get(pk = product_id)
+            product = Product.objects.get(pk=product_id)
             product_name = product.name
         except Product.DoesNotExist:
-            return Response({'message':'No such product'})
+            return Response({'message': 'No such product'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Validate user existence
         try:
-            user = Registration.objects.get(pk = user_id)
+            user = Registration.objects.get(pk=user_id)
             username = user.name
-
         except Registration.DoesNotExist:
-            return Response({'message':'No such user'})
+            return Response({'message': 'No such user'}, status=status.HTTP_404_NOT_FOUND)
 
-        review = {
-            'product_id':product_id,
-            'user_id':user_id,
-            'product_name':product_name,
-            'user_name':username,
-            'description':description,
+        # Prepare review data
+        review_data = {
+            'product_id': product_id,
+            'user_id': user_id,
+            'product_name': product_name,
+            'user_name': username,
+            'description': description,
             'rating': rating,
+            # 'image': upload_data['url'],
         }
 
-        serialized_data = ReviewSerializer(data = review)
-        print(serialized_data)
+        # Serialize and save review
+        serialized_data = ReviewSerializer(data=review_data)
         if serialized_data.is_valid():
-            serialized_data.save()
-            return Response({'data':serialized_data.data,'message':'Uploaded successfully'},status=status.HTTP_200_OK)
+            saved_review =  serialized_data.save()
+            try:
+                for image in images:
+                     # Upload image to Cloudinary
+                    try:
+                        upload_data = cloudinary.uploader.upload(image)
+                    except Exception as e:
+                        return Response({'message': f'Image upload failed: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+                    Review_image.objects.create(image = upload_data['url'],review = saved_review)
+            except:
+                ''
+            return Response({'data': serialized_data.data, 'message': 'Uploaded successfully'}, status=status.HTTP_200_OK)
         else:
-            return Response({"message":'Upload failed'},status=status.HTTP_400_BAD_REQUEST)
-        
+            return Response({"message": "Upload failed", "errors": serialized_data.errors}, status=status.HTTP_400_BAD_REQUEST)
+  
 class View_Review(GenericAPIView):
     def get_serializer_class(self):
         return ReviewSerializer
@@ -316,39 +340,85 @@ class View_Review(GenericAPIView):
         reviews = Review.objects.all()
         if reviews.count() > 0:
             serialized_data = ReviewSerializer(reviews,many = True)
-            return Response({'data':serialized_data.data,'count':reviews.count()},status=status.HTTP_200_OK)
+            return Response({'data':serialized_data.data,'count':reviews.count(),},status=status.HTTP_200_OK)
         else :
             return Response({'message':'No Reviews Yet'},status=status.HTTP_400_BAD_REQUEST)
-        
-class Update_Review_By_Id(GenericAPIView):
+
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.generics import GenericAPIView
+from .models import Review
+from .serializers import ReviewSerializer
+
+class View_Review_By_Product_Id(GenericAPIView):
     def get_serializer_class(self):
         return ReviewSerializer
+
+    def get(self, request, product_id):
+        reviews = Review.objects.filter(product_id=product_id)
+
+        if reviews.count() > 0:
+            # Serialize the reviews
+            serialized_data = ReviewSerializer(reviews, many=True)
+
+            # Extract images for each review
+            images = []
+            for review_data in serialized_data.data:
+                if 'images' in review_data:  # Check if 'images' field exists
+                    images.extend(review_data['images'])  # Assuming images is a list for each review
+
+            # Ensure images are unique
+            unique_images = list(set(images))
+
+            # Prepare the response
+            return Response({
+                'data': serialized_data.data,
+                'count': reviews.count(),
+                'images': unique_images,
+            }, status=status.HTTP_200_OK)
+
+        else:
+            # If no reviews found
+            return Response({'message': 'No Reviews Yet'}, status=status.HTTP_400_BAD_REQUEST)
+      
+# class Update_Review_By_Id(GenericAPIView):
+#     def get_serializer_class(self):
+#         return ReviewSerializer
     
-    def put(self,request,id):
-        try:
-            reviewtoupdate = Review.objects.get(pk = id)
-            serialized_data = ReviewSerializer(instance = reviewtoupdate, data = request.data, partial = True)
-            if serialized_data.is_valid():
-                serialized_data.save()
-                return Response({'message':'Updated successfully','data':serialized_data.data},status=status.HTTP_200_OK)
-            else:
-                return Response({'message':'Updation failed'},status=status.HTTP_400_BAD_REQUEST)
+#     def put(self,request,id):
+#         try:
+#             reviewtoupdate = Review.objects.get(pk = id)
+#             image = request.FILES.get('image')
+#             if image:
+#                 try:
+#                     # Upload the new image to Cloudinary
+#                     upload_data = cloudinary.uploader.upload(image)
+#                     request.data['image'] = upload_data['url']
+#                 except Exception as e:
+#                     return Response({'message': f'Image upload failed: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+
+#             serialized_data = ReviewSerializer(instance = reviewtoupdate, data = request.data, partial = True)
+#             if serialized_data.is_valid():
+#                 serialized_data.save()
+#                 return Response({'message':'Updated successfully','data':serialized_data.data},status=status.HTTP_200_OK)
+#             else:
+#                 return Response({'message':'Updation failed'},status=status.HTTP_400_BAD_REQUEST)
             
-        except Review.DoesNotExist:
-            return Response({'message':'Id does not exists'})
+#         except Review.DoesNotExist:
+            # return Response({'message':'Id does not exists'})
         
-class Delete_Review_By_Id(GenericAPIView):
-    def get_serializer_class(self):
-        return ReviewSerializer
+# class Delete_Review_By_Id(GenericAPIView):
+#     def get_serializer_class(self):
+#         return ReviewSerializer
     
-    def delete(self,request,id):
-        try:
-            reviewtodelete = Review.objects.get(pk = id)
-            reviewtodelete.delete()
-            return Response({"message":"Deleted successfully"},status=status.HTTP_200_OK)
-        except Review.DoesNotExist:
-            return Response({'message':'Id does not exists'},status=status.HTTP_404_NOT_FOUND)
-        
+#     def delete(self,request,id):
+#         try:
+#             reviewtodelete = Review.objects.get(pk = id)
+#             reviewtodelete.delete()
+#             return Response({"message":"Deleted successfully"},status=status.HTTP_200_OK)
+#         except Review.DoesNotExist:
+#             return Response({'message':'Id does not exists'},status=status.HTTP_404_NOT_FOUND)
+       
 class View_Review_By_Id(GenericAPIView):
     def get_serializer_class(self):
         return ReviewSerializer

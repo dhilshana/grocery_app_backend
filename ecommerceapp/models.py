@@ -33,6 +33,9 @@ class Product(models.Model):
     unit = models.CharField(max_length=10,default='Kg')
     desc = models.TextField(default='description')
 
+    def __str__(self):
+        return self.name
+
 
 
 class Review(models.Model):
@@ -44,6 +47,9 @@ class Review(models.Model):
     description = models.TextField()
     rating = models.PositiveSmallIntegerField(default=1, help_text="Rating should be between 1 and 5")
 
+class Review_image(models.Model):
+    review = models.ForeignKey(Review,on_delete=models.CASCADE)
+    image = models.URLField('image', null=True, blank=True, default='')
 
 class Wishlist(models.Model):
     product_id = models.CharField(max_length=10)
